@@ -1,17 +1,17 @@
 [package]
 name = "soma-compress"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
 license = "MIT"
-publish.workspace = true
+repository = "https://github.com/taostat/soma-compress"
 description = "Pure-Rust text-level port of the SOMA OpenClaw compressor."
 
 [dev-dependencies]
 proptest = "=1.11.0"
 
 [lints.clippy]
-pedantic = "allow"
+pedantic = { level = "allow", priority = -1 }
 unwrap_used = "deny"
 expect_used = "warn"
 panic = "deny"
