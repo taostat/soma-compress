@@ -223,50 +223,31 @@ fn is_path_character(character: char) -> bool {
     is_word_char(character) || matches!(character, '.' | '-')
 }
 
-fn has_extension(characters: &[char], start: usize, end: usize) -> bool {
-    (start..end).any(|index| {
-        characters[index] == '.'
-            && characters[index + 1..end]
-                .iter()
-                .take(4)
-                .take_while(|character| character.is_ascii_alphabetic())
-                .count()
-                > 0
+fn has_extension(segment: &str) -> bool {
+    let mut extensions = segment.split('.');
+    let _ = extensions.next();
+    extensions.any(|extension| {
+        extension
+            .chars()
+            .take(4)
+            .take_while(|character| character.is_ascii_alphabetic())
+            .next()
+            .is_some()
     })
 }
 
 fn has_path_pattern(line: &str) -> bool {
-    let characters: Vec<char> = line.chars().collect();
-    for start in 0..characters.len() {
-        let mut cursor = start;
-        if characters[cursor] == '/' {
-            cursor += 1;
-        }
-        let first_segment_start = cursor;
-        while cursor < characters.len() && is_path_character(characters[cursor]) {
-            cursor += 1;
-        }
-        if cursor == first_segment_start {
-            continue;
-        }
-
-        let mut slash_count = 0;
-        loop {
-            if cursor >= characters.len() || characters[cursor] != '/' {
-                break;
+    for run in line.split(|character: char| !is_path_character(character) && character != '/') {
+        let mut segment_count = 0;
+        for segment in run.split('/') {
+            if segment.is_empty() {
+                segment_count = 0;
+                continue;
             }
-            cursor += 1;
-            let segment_start = cursor;
-            while cursor < characters.len() && is_path_character(characters[cursor]) {
-                cursor += 1;
-            }
-            if cursor == segment_start {
-                break;
-            }
-            slash_count += 1;
-            if slash_count > 0 && has_extension(&characters, segment_start, cursor) {
+            if segment_count > 0 && has_extension(segment) {
                 return true;
             }
+            segment_count += 1;
         }
     }
     false
@@ -488,6 +469,39 @@ pub fn compress(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    const VARIED_PARAGRAPH: &str = concat!(
+        "Every ordinary record describes a calm brown river under a pale morning sky.\n",
+        "Repeated context carries durable meaning while low-value details vary by turn.\n",
+        "Stable ordering keeps identical requests aligned with warm provider caches.\n",
+        "Short observations join this paragraph without adding special diagnostics or paths.\n",
+    );
+
+    const MIXED_PARAGRAPH: &str = concat!(
+        "The gateway keeps a stable account of the request and its surrounding context.\n",
+        "A small helper reads the value, trims whitespace, and returns the same result.\n",
+        "let normalized_value = value.trim().to_owned();\n",
+        "2026-08-25T12:34:56Z INFO request completed with a warm cache entry\n",
+        "The next ordinary paragraph preserves enough varied language for ranking.\n",
+    );
+
+    fn repeated_to_len(target_len: usize, paragraph: &str) -> String {
+        assert!(!paragraph.is_empty());
+        let mut text = String::with_capacity(target_len);
+        while text.len() < target_len {
+            text.push_str(paragraph);
+        }
+        text.truncate(floor_char_boundary(&text, target_len));
+        text
+    }
+
+    fn compressed_body(output: &str) -> &str {
+        let Some(body) = output.strip_prefix("[[CMP]]\n") else {
+            return output;
+        };
+        body.strip_suffix("\n[[/CMP]]").map_or(body, |body| body)
+    }
 
     #[test]
     fn input_at_or_below_passthrough_floor_returns_none() {
@@ -526,5 +540,202 @@ mod tests {
         let truncated = truncate_text(&emoji_text, 16_001, 16_001);
         assert!(truncated.contains(CMP_START));
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn compression_is_deterministic_across_threads() {
+        let text = repeated_to_len(60_000, MIXED_PARAGRAPH);
+        assert!(text.len() > 53_000);
+
+        let mut outputs = vec![compress(&text), compress(&text)];
+        let threaded = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4).map(|_| scope.spawn(|| compress(&text))).collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    let result = handle.join();
+                    assert!(result.is_ok(), "compression worker panicked");
+                    result.ok().flatten()
+                })
+                .collect::<Vec<_>>()
+        });
+        outputs.extend(threaded);
+
+        assert!(
+            outputs[0].is_some(),
+            "oversized mixed input did not compress"
+        );
+        let expected = outputs[0].as_deref();
+        assert!(outputs.iter().all(|output| output.as_deref() == expected));
+    }
+
+    #[test]
+    fn compression_never_inflates_across_size_sweep() {
+        for length in [
+            15_999, 16_000, 16_001, 20_000, 26_700, 40_000, 53_400, 80_000,
+        ] {
+            let text = repeated_to_len(length, VARIED_PARAGRAPH);
+            assert_eq!(text.len(), length);
+            let output = compress(&text);
+
+            if length <= MIN_PASSTHROUGH_CHARS {
+                assert!(output.is_none(), "{length} bytes should pass through");
+            }
+            if let Some(output) = output {
+                assert!(
+                    output.len() < text.len(),
+                    "compressed {length}-byte input inflated to {} bytes",
+                    output.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pinned_lines_survive_a_large_log() {
+        let mut text = String::new();
+        for index in 0..4_000 {
+            match index {
+                137 => text.push_str(concat!(
+                    "Traceback (most recent call last):\n",
+                    "  File \"service/worker.py\", line 42, in handler\n",
+                    "  File \"service/processor.py\", line 17, in process\n",
+                    "AssertionError: boom\n",
+                )),
+                811 => text.push_str("FAILED test_alpha\n"),
+                1_711 => text.push_str("tests/test_x.py::test_beta\n"),
+                2_333 => text.push_str("django/utils/html.py:236\n"),
+                2_811 => text.push_str("import inspect\n"),
+                3_011 => text.push_str("from functools import wraps\n"),
+                3_211 => text.push_str("def handler(event):\n"),
+                3_511 => text.push_str("@@ -1,4 +1,6 @@\n+added line\n-removed line\n"),
+                _ => {}
+            }
+            text.push_str(&format!(
+                "INFO filler record {index:04} carries routine context words only\n"
+            ));
+        }
+        assert!(text.len() > 53_000);
+
+        let compressed = compress(&text);
+        assert!(compressed.is_some(), "large log did not compress");
+        let output = compressed.unwrap_or_default();
+        for expected in [
+            "Traceback (most recent call last):",
+            "  File \"service/worker.py\", line 42, in handler",
+            "  File \"service/processor.py\", line 17, in process",
+            "AssertionError: boom",
+            "FAILED test_alpha",
+            "tests/test_x.py::test_beta",
+            "django/utils/html.py:236",
+            "import inspect",
+            "from functools import wraps",
+            "def handler(event):",
+            "@@ -1,4 +1,6 @@",
+            "+added line",
+            "-removed line",
+        ] {
+            assert!(
+                output.lines().any(|line| line == expected),
+                "pinned line was lost: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn ellipses_mark_head_middle_and_tail_elision() {
+        let mut text = String::new();
+        for index in 0..4_000 {
+            if index == 0 {
+                text.push_str("low-value filler line\n");
+                continue;
+            }
+            match index {
+                700 => text.push_str("FAILED head_anchor\n"),
+                2_000 => text.push_str("django/utils/html.py:236\n"),
+                3_300 => text.push_str("def handler(event):\n"),
+                _ => {}
+            }
+            text.push_str(&format!(
+                "routine filler record {index:04} contains ordinary context words and no diagnostic signal\n"
+            ));
+        }
+        assert!(text.len() > 53_000);
+
+        let compressed = compress(&text);
+        assert!(compressed.is_some(), "ellipsis fixture did not compress");
+        let output = compressed.unwrap_or_default();
+        let body = compressed_body(&output);
+        let lines: Vec<_> = body.lines().collect();
+
+        assert_eq!(lines.first().copied(), Some("…"));
+        assert!(lines
+            .iter()
+            .enumerate()
+            .any(|(index, line)| { *line == "…" && index > 0 && index + 1 < lines.len() }));
+        assert_eq!(lines.last().copied(), Some("…"));
+    }
+
+    #[test]
+    fn any_existing_compression_marker_is_a_fixed_point() {
+        let inputs = [
+            "prefix [[CMP]] suffix".to_owned(),
+            format!("{}[[CMP]]{}", "x".repeat(50_000), "y".repeat(50_000)),
+            format!("[[CMP]]{}", "z".repeat(100_000)),
+        ];
+
+        for input in inputs {
+            assert!(compress(&input).is_none());
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 16,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn arbitrary_unicode_input_preserves_compression_invariants(
+            characters in prop::collection::vec(
+                prop_oneof![
+                    4 => Just('\n'),
+                    8 => prop::char::range('a', 'z'),
+                    3 => prop::char::range('0', '9'),
+                    3 => prop::char::range('\u{00c0}', '\u{024f}'),
+                    3 => prop::char::range('\u{0400}', '\u{04ff}'),
+                    2 => prop::char::range('\u{1f600}', '\u{1f64f}'),
+                    2 => Just(' '),
+                    1 => Just('\t'),
+                ],
+                // The largest generated character is four bytes, so this is
+                // bounded at roughly 100k input bytes while retaining varied
+                // Unicode and newline coverage.
+                0..=25_000,
+            )
+        ) {
+            let input: String = characters.into_iter().collect();
+            if let Some(output) = compress(&input) {
+                prop_assert!(output.len() < input.len());
+                let round_trip = std::str::from_utf8(output.as_bytes());
+                prop_assert_eq!(round_trip.ok(), Some(output.as_str()));
+                prop_assert_eq!(compress(&output), None);
+            }
+        }
+    }
+
+    #[test]
+    fn ten_megabyte_single_line_completes() {
+        let text = "x".repeat(10_000_000);
+        let _ = compress(&text);
+    }
+
+    #[test]
+    fn ten_megabytes_across_two_hundred_thousand_lines_completes() {
+        let line = "ordinary filler context words for bounded work check 1234567890\n";
+        let text = line.repeat(200_000);
+        assert!(text.len() >= 10_000_000);
+        assert_eq!(text.lines().count(), 200_000);
+        let _ = compress(&text);
     }
 }

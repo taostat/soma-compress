@@ -7,6 +7,9 @@ license = "MIT"
 publish.workspace = true
 description = "Pure-Rust text-level port of the SOMA OpenClaw compressor."
 
+[dev-dependencies]
+proptest = "=1.11.0"
+
 [lints.clippy]
 pedantic = "allow"
 unwrap_used = "deny"
