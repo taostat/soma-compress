@@ -11,7 +11,7 @@ real tool output with no model in the loop. Built for LLM gateways and
 agent runtimes that want to shrink bulky tool output — logs, test runs,
 file dumps — without touching anything a coding agent depends on.
 
-It runs in production inside [gm](https://saygm.com), the Bittensor
+It runs in production inside [SayGM](https://saygm.com), the Bittensor
 frontier-inference gateway, as the engine behind its opt-in tool-result
 compression.
 
