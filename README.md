@@ -4,9 +4,16 @@ Extractive compression for oversized agent tool results, in pure Rust.
 
 A text-level port of the compression core of
 [SOMA-OpenClaw-compressor](https://github.com/DendriteHQ/SOMA-OpenClaw-compressor)
-by [Dendrite](https://github.com/DendriteHQ) (MIT). Built for LLM gateways
-and agent runtimes that want to shrink bulky tool output — logs, test
-runs, file dumps — without touching anything load-bearing.
+by [Dendrite](https://github.com/DendriteHQ) (MIT). SOMA's extractive
+approach — keep every load-bearing line, rank the rest by informativeness —
+is what lets a few hundred lines of dependency-free Rust remove 50–87% of
+real tool output with no model in the loop. Built for LLM gateways and
+agent runtimes that want to shrink bulky tool output — logs, test runs,
+file dumps — without touching anything a coding agent depends on.
+
+It runs in production inside [gm](https://saygm.com), the Bittensor
+frontier-inference gateway, as the engine behind its opt-in tool-result
+compression.
 
 ## What it does
 
@@ -41,6 +48,9 @@ The properties gateways rely on, each pinned by tests:
 - **Panic-free** — UTF-8-boundary-safe on arbitrary input (property-tested).
 
 ## Measured ratios (real artifacts)
+
+Real oversized artifacts captured from agent sessions, not synthetic
+benchmarks — half to seven-eighths of each one goes away:
 
 | Input | Saved |
 |---|---|
